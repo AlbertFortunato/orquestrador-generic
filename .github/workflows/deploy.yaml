@@ -1,0 +1,61 @@
+name: Deploy to EKS
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: springboot-app
+  CLUSTER_NAME: meu-cluster
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@v4
+
+      - name: Configurar AWS CLI e kubectl
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y awscli
+          curl -o kubectl https://s3.us-west-2.amazonaws.com/amazon-eks/1.27.5/2023-10-02/bin/linux/amd64/kubectl
+          chmod +x ./kubectl
+          sudo mv ./kubectl /usr/local/bin
+
+      - name: Configurar credenciais AWS
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Buildar imagem Docker
+        run: |
+          docker build -t $ECR_REPOSITORY:latest .
+
+      - name: Fazer login no Amazon ECR
+        id: login-ecr
+        run: |
+          aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin <AWS_ACCOUNT_ID>.dkr.ecr.$AWS_REGION.amazonaws.com
+
+      - name: Criar repositório ECR se não existir
+        run: |
+          aws ecr describe-repositories --repository-names $ECR_REPOSITORY --region $AWS_REGION || \
+          aws ecr create-repository --repository-name $ECR_REPOSITORY --region $AWS_REGION
+
+      - name: Taggear e fazer push da imagem para o ECR
+        run: |
+          docker tag $ECR_REPOSITORY:latest <AWS_ACCOUNT_ID>.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:latest
+          docker push <AWS_ACCOUNT_ID>.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:latest
+
+      - name: Configurar kubectl para acessar o EKS
+        run: |
+          aws eks update-kubeconfig --region $AWS_REGION --name $CLUSTER_NAME
+
+      - name: Deploy no EKS
+        run: |
+          kubectl apply -f k8s/
